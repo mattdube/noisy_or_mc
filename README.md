@@ -1,0 +1,28 @@
+### Noisy-OR Risk Model
+A Noisy-OR risk model is a probabilistic model used to calculate the likelihood of a single adverse outcome (effect) caused by one or more independent factors (sources), where each factor may only partially or potentially cause the risk. 
+
+#### The core problem with no labeled data
+* When you have no outcomes to train on, you can't fit a traditional model — there's nothing to minimize a loss function against. You have two options: make up a number (a point estimate per source), or be honest about your uncertainty and reason probabilistically from what you do know. The second option is what this model does.
+* The expert-specified Beta prior is the key mechanism. Instead of saying "S4 causes 45% risk," you say "I believe S4 causes roughly 45% risk, and I'm only moderately confident in that based on limited experience with that source and a lack of information available." That second statement is actually richer information. The concentration parameter captures it formally, and the model carries that uncertainty all the way through to the final score. A traditional point-estimate approach would give you a number with false precision. This one tells you the number and how much to trust it.
+
+#### Why Noisy-OR specifically
+* The independence assumption is the key. If your sources genuinely reflect different underlying signals — a death flag, an exclusion match, an outstanding debt, no account validation— then each one represents a separate causal pathway to the same risk outcome. Noisy-OR models exactly that: the outcome occurs unless all pathways fail simultaneously.
+* This has a few practical advantages over the obvious alternatives:
+    * Summing or averaging probabilities ignores independence and breaks the [0,1] bound. You end up with nonsense scores above 1.0 when multiple sources fire. Noisy-OR stays bounded by construction because you're multiplying probabilities of failure, which are all less than 1.
+    * A weighted linear score can be calibrated to look reasonable, but it has no probabilistic interpretation. You can't ask "what's the 90th percentile of this score given my uncertainty about S4?" because it's just a weighted sum, not a distribution.
+    * A naive Bayes classifier needs labeled data to estimate P(source fires | risk) vs P(source fires | no risk). You don't have that. Noisy-OR sidesteps this entirely by working with prior beliefs about P(risk | source fires), which your domain experts can provide directly.
+
+#### Why Beta distributions specifically
+Three reasons converge here. 
+* First, the support is [0,1], which matches probabilities exactly — you can't accidentally assign a source a negative risk probability or one above 100%.
+* Second, the conjugate update property means that if you ever do accumulate labeled observations, updating the model is literally two additions: alpha += confirmed_hits, beta += confirmed_misses. The posterior is still a Beta distribution, computed in closed form with no MCMC, no retraining, no pipeline rerun. The model is designed to improve gracefully as evidence arrives without requiring a fundamentally different architecture.
+* Third — and this is what makes it work with no labels — the (mean, concentration) parameterization maps naturally to expert knowledge. An analyst who says "I think this source fires on about 35% of true risk cases, and I've seen roughly 300 similar cases in my career" has just specified Beta(105, 195) without knowing any statistics. The concentration is their effective sample size. A source they're uncertain about — "maybe 45%, hard to say" — gets a low concentration like 15, which produces a wide Beta curve and therefore wide credible intervals on any score that source drives. The uncertainty is structural, not an afterthought.
+
+#### Why this beats the alternatives when sources vary in confidence
+This is probably the strongest argument for this specific approach. Consider two sources: S7 with mean 0.35 and concentration 300 (well-validated), and S4 with mean 0.45 and concentration 15 (uncertain). A point-estimate model would just use 0.35 and 0.45 and call it done — S4 looks more dangerous than S7.<BR>
+But in the Noisy-OR model with Monte Carlo uncertainty, a record that only matches S4 gets a wide credible interval [0.30, 0.63] while a record matching only S7 gets a narrow one [0.33, 0.40]. The CI width is genuine information: it tells you whether your score is reliable enough to act on, or whether you need a human to look at it. A traditional risk score has no concept of this. You'd need to build a separate confidence layer on top, which most implementations never do.<BR>
+The result is a model where low-confidence sources contribute to the score but also inflate the uncertainty band, naturally flagging records that depend heavily on uncertain signals for manual review. That's exactly the right behavior in a real risk workflow.<BR>
+
+#### The efficiency argument
+Put together: you get a model that requires only expert time to specify (no data collection or labeling), produces calibrated uncertainty quantification for free (from the Beta distributions), handles sources of wildly different confidence levels correctly (via concentration), computes in a few milliseconds with pure NumPy (no MCMC), updates instantly when new evidence arrives (conjugate update), and has a clear causal story you can explain to a non-technical stakeholder (each source is an independent pathway to risk). Most risk scoring systems that do some of these things require significant infrastructure or don't do all of them simultaneously. This one does all of them by construction.
+
