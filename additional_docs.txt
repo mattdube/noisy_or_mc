@@ -1,0 +1,27 @@
+predict.py is fully self-contained — the only files it needs alongside it are params/param_store.json and numpy. Nothing else from the pipeline is imported. Here's what it gives you:
+Three ways to use it:
+
+# 1. Dict — most readable, unspecified sources default to 0
+result = predict(model, {"S1": 1, "S4": 1, "S7": 1})
+
+# 2. List — in source order, same as passing to the API
+result = predict(model, [1, 0, 0, 1, 0, 0, 1, 0])
+
+# 3. Empty dict — baseline (no matches)
+result = predict(model, {})
+
+From the terminal:
+python predict.py 1 0 0 1 0 0 1 0
+
+What comes back is a plain dict, no pandas, no special objects.
+
+result["risk_score"]      # 0.6567
+result["tier"]            # "Moderate"
+result["confidence"]      # "Low" (wide CI because S4 is uncertain)
+result["primary_driver"]  # "S4"
+result["impacts"]         # {"S4": 0.2809, "S7": 0.1849, "S1": 0.007}
+result["explanation"]     # full human-readable sentence
+result["risk_p10"]        # 0.554  ← lower CI bound
+result["risk_p90"]        # 0.761  ← upper CI bound
+
+predict_df() is also available if you have pandas and want a DataFrame back from a small list of records. For anything over a few hundred records though, phase5_batch.py is the right tool since it uses the fully vectorised path.
