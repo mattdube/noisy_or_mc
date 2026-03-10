@@ -1,0 +1,9 @@
+Label,Risk_Score,Median_Risk,P5,P95,Certainty,Certainty_Label,Primary_Driver,Primary_Driver_Contribution,Source_1_Active,Source_1_MarginalContrib,Source_2_Active,Source_2_MarginalContrib,Source_3_Active,Source_3_MarginalContrib,Source_4_Active,Source_4_MarginalContrib,Source_5_Active,Source_5_MarginalContrib,Source_6_Active,Source_6_MarginalContrib,Source_7_Active,Source_7_MarginalContrib,Source_8_Active,Source_8_MarginalContrib,Active_Sources
+Customer_A,0.8606,0.8801,0.6746,0.9762,0.6985,Medium,Source 1,0.2106,1,0.2106,0,0.0,1,0.0598,0,0.0,0,0.0,1,0.1392,0,0.0,0,0.0,"Source 1, Source 3, Source 6"
+Customer_B,0.6031,0.611,0.3446,0.8358,0.5088,Medium,Source 2,0.3234,0,0.0,1,0.3234,0,0.0,1,0.099,0,0.0,0,0.0,1,0.0442,0,0.0,"Source 2, Source 4, Source 7"
+Customer_C,0.8778,0.8963,0.7111,0.9797,0.7314,Medium,Source 1,0.1821,1,0.1821,1,0.0999,0,0.0,0,0.0,1,0.0214,0,0.0,0,0.0,1,0.0655,"Source 1, Source 2, Source 5, Source 8"
+Customer_D,0.0,0.0,0.0,0.0,1.0,High,,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,None
+Customer_E,0.9695,0.9776,0.9148,0.9964,0.9183,High,Source 1,0.0455,1,0.0455,1,0.025,1,0.013,1,0.0077,1,0.0054,1,0.0305,1,0.0034,1,0.0165,"Source 1, Source 2, Source 3, Source 4, Source 5, Source 6, Source 7, Source 8"
+Customer_F,0.6012,0.616,0.2482,0.906,0.3422,Low,Source 1,0.6012,1,0.6012,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,Source 1
+Customer_G,0.3513,0.3402,0.1242,0.6175,0.5067,Medium,Source 8,0.3513,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,1,0.3513,Source 8
+Customer_H,0.8457,0.8658,0.6537,0.9699,0.6838,Medium,Source 1,0.2307,1,0.2307,1,0.1259,1,0.0663,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,"Source 1, Source 2, Source 3"
