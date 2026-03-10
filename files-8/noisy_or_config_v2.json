@@ -1,0 +1,47 @@
+{
+  "version": "1.1.0",
+  "version_date": "2026-03-10",
+  "n_monte_carlo_samples": 20000,
+  "sources": [
+    {
+      "name": "Watchlist Hit",
+      "mu": 0.7,
+      "kappa": 6.0
+    },
+    {
+      "name": "Adverse Media",
+      "mu": 0.4,
+      "kappa": 8.0
+    },
+    {
+      "name": "PEP Match",
+      "mu": 0.55,
+      "kappa": 5.0
+    },
+    {
+      "name": "Sanctions Screen",
+      "mu": 0.8,
+      "kappa": 10.0
+    },
+    {
+      "name": "High-Risk Geography",
+      "mu": 0.35,
+      "kappa": 7.0
+    },
+    {
+      "name": "Transaction Flag",
+      "mu": 0.25,
+      "kappa": 9.0
+    },
+    {
+      "name": "Industry Risk",
+      "mu": 0.2,
+      "kappa": 6.0
+    },
+    {
+      "name": "Ownership Complexity",
+      "mu": 0.3,
+      "kappa": 4.0
+    }
+  ]
+}

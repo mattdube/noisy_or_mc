@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "version_date": "2026-03-09",
+  "n_monte_carlo_samples": 20000,
+  "sources": [
+    {"name": "Source 1", "mu": 0.60, "kappa": 5.0},
+    {"name": "Source 2", "mu": 0.45, "kappa": 8.0},
+    {"name": "Source 3", "mu": 0.30, "kappa": 10.0},
+    {"name": "Source 4", "mu": 0.20, "kappa": 6.0},
+    {"name": "Source 5", "mu": 0.15, "kappa": 4.0},
+    {"name": "Source 6", "mu": 0.50, "kappa": 7.0},
+    {"name": "Source 7", "mu": 0.10, "kappa": 12.0},
+    {"name": "Source 8", "mu": 0.35, "kappa": 9.0}
+  ]
+}
