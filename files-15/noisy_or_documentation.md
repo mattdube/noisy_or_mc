@@ -547,7 +547,7 @@ New: vectorized pool slice                       →  ~2.5 ms/record
 
 ### Duplicate-Row Cache (Batch)
 
-Before scoring, `predict_batch()` identifies all unique flag combinations in the input matrix. Only the unique rows are passed to the vectorized scorer; results are then mapped back to the original record order. Each unique combination is scored exactly once per batch call regardless of how many times it appears.
+Before scoring, `predict_batch()` identifies all unique flag combinations in the input matrix. The implementation now uses NumPy's `np.unique(..., axis=0, return_inverse=True)` to deduplicate rows in a single native call and map results back to the original record order via the inverse indices. This avoids converting rows to Python tuples and eliminates Python dict lookups for large batches.
 
 This is especially effective for large screening datasets where most records trigger only one or two sources:
 
@@ -599,6 +599,15 @@ if projected > _BATCH_CHUNK_BYTES:
 
 This is transparent to callers — the output is identical regardless of whether chunking was triggered. The threshold can be adjusted by setting `noisy_or_model._BATCH_CHUNK_BYTES` before loading the model. The same protection applies to both the standard model and the API model.
 
+Implementation note: the projected size estimate now computes bytes from the pool's element size rather than assuming 4 bytes per element. This is computed as `elem_bytes = self._batch_pool.dtype.itemsize` and the projection becomes:
+
+```py
+# conservative estimate based on pool dtype and number of unique rows
+projected = n_unique_rows * n_sources * n_samples * elem_bytes
+```
+
+Because NumPy sometimes upcasts temporaries to `float64` during intermediate ops, the code is conservative about chunk sizes; the calculation can be multiplied by a safety factor if you expect extra temporaries.
+
 ---
 
 ### Polars Backend
@@ -629,6 +638,8 @@ df = registry.predict_batch("customer_1", matrix, backend="polars")
 **Excel export** always uses openpyxl internally. When `backend="polars"` is used with `.xlsx`, the DataFrame is converted to pandas for the write step only — the returned value is still a `polars.DataFrame`.
 
 If polars is not installed and `backend="polars"` is requested, an `ImportError` is raised immediately with the install command. If an unrecognised backend string is passed, a `ValueError` is raised.
+
+Implementation note: the standard model's vectorized scorer returns pandas-native arrays and the Polars path converts the constructed `pandas.DataFrame` to Polars via `pl.from_pandas(...)` to preserve column dtypes and avoid a second per-row construction path. The public API still returns a `polars.DataFrame` when `backend="polars"`.
 
 ---
 

@@ -138,7 +138,7 @@ def _simulate_batch_vectorized(
     active_matrix: np.ndarray,  # shape (n_records, n_sources)
     n_samples: int,
     rng: np.random.Generator,
-) -> list[dict]:
+) -> tuple[list[dict], np.ndarray]:
     """
     Score all records in a single vectorized NumPy pass.
 
@@ -208,7 +208,8 @@ def _simulate_batch_vectorized(
             "marginal_contribs": contribs,
         })
 
-    return results
+    # Return both the list-of-dicts (compatibility) and the raw contribs matrix
+    return results, contribs_mat
 
 
 # ---------------------------------------------------------------------------
@@ -446,30 +447,92 @@ class NoisyORModelAPI(NoisyORModel):
         n   = n_samples or PRECISION_SAMPLES.get(precision, PRECISION_SAMPLES["standard"])
         rng = np.random.default_rng(seed)
 
-        # Memory-safe chunking — same threshold as base model
+        # --- Deduplication: use NumPy unique to get unique rows + inverse map ---
+        unique_matrix, inv = np.unique(active_matrix, axis=0, return_inverse=True)
+
+        # Memory-safe chunking — compute projected bytes using pool dtype
         from noisy_or_model import _BATCH_CHUNK_BYTES
-        projected_bytes = n_records * self._n_sources * n * 4
+        elem_bytes = getattr(self._pool, "dtype", np.dtype("float32")).itemsize
+        projected_bytes = unique_matrix.shape[0] * self._n_sources * n * elem_bytes
+
         if projected_bytes > _BATCH_CHUNK_BYTES:
-            chunk_size = max(1, _BATCH_CHUNK_BYTES // (self._n_sources * n * 4))
-            sim_list: list[dict] = []
-            for start in range(0, n_records, chunk_size):
-                chunk = active_matrix[start : start + chunk_size]
-                sim_list.extend(
-                    _simulate_batch_vectorized(self._pool, self._source_means, chunk, n, rng)
+            chunk_size = max(1, _BATCH_CHUNK_BYTES // (self._n_sources * n * elem_bytes))
+            unique_sims_all: list[dict] = []
+            contribs_parts: list[np.ndarray] = []
+            for start in range(0, unique_matrix.shape[0], chunk_size):
+                chunk = unique_matrix[start : start + chunk_size]
+                sims_chunk, cm_chunk = _simulate_batch_vectorized(
+                    self._pool, self._source_means, chunk, n, rng
                 )
+                unique_sims_all.extend(sims_chunk)
+                contribs_parts.append(cm_chunk)
+            unique_contribs_mat = np.vstack(contribs_parts)
         else:
-            sim_list = _simulate_batch_vectorized(
-                self._pool, self._source_means, active_matrix, n, rng
+            unique_sims_all, unique_contribs_mat = _simulate_batch_vectorized(
+                self._pool, self._source_means, unique_matrix, n, rng
             )
 
-        rows = [
-            self._format_row(sim, active_matrix[i], labels[i])
-            for i, sim in enumerate(sim_list)
-        ]
+        # Build vectorized columns from unique sims and map back via inv
+        unique_mean = np.array([s["mean_risk"] for s in unique_sims_all])
+        unique_median = np.array([s["median_risk"] for s in unique_sims_all])
+        unique_p5 = np.array([s["p5"] for s in unique_sims_all])
+        unique_p95 = np.array([s["p95"] for s in unique_sims_all])
+        unique_cert = np.array([s["certainty"] for s in unique_sims_all])
+        unique_cert_label = [s["certainty_label"] for s in unique_sims_all]
+
+        names = self._names
+        n_unique = unique_matrix.shape[0]
+
+        # Primary driver and primary contribution for unique rows
+        primary_vals = unique_contribs_mat.max(axis=1)
+        primary_idx = unique_contribs_mat.argmax(axis=1)
+        primary_driver_unique = [names[i] if primary_vals[j] > 0 else "" for j, i in enumerate(primary_idx)]
+        primary_contrib_unique = np.round(primary_vals, 4)
+
+        # Active_Sources string per unique row
+        active_sources_unique = []
+        for r in range(n_unique):
+            act = [names[i] for i in range(self._n_sources) if unique_matrix[r, i]]
+            active_sources_unique.append(
+                ", ".join(act) if act else "None"
+            )
+
+        # Map unique arrays back to record order via inv
+        mean_col = unique_mean[inv]
+        median_col = unique_median[inv]
+        p5_col = unique_p5[inv]
+        p95_col = unique_p95[inv]
+        cert_col = unique_cert[inv]
+        cert_label_col = [unique_cert_label[i] for i in inv]
+        primary_driver_col = [primary_driver_unique[i] for i in inv]
+        primary_contrib_col = primary_contrib_unique[inv]
+        active_sources_col = [active_sources_unique[i] for i in inv]
+
+        cols: dict = {
+            "Label": labels,
+            "Risk_Score": np.round(mean_col, 4),
+            "Median_Risk": np.round(median_col, 4),
+            "P5": np.round(p5_col, 4),
+            "P95": np.round(p95_col, 4),
+            "Certainty": np.round(cert_col, 4),
+            "Certainty_Label": cert_label_col,
+            "Primary_Driver": primary_driver_col,
+            "Primary_Driver_Contribution": np.round(primary_contrib_col, 4),
+            "Active_Sources": active_sources_col,
+        }
+
+        # Per-source columns
+        for i, name in enumerate(self._names):
+            col_base = name.replace(" ", "_")
+            cols[f"{col_base}_Active"] = active_matrix[:, i].astype(int)
+            cols[f"{col_base}_MarginalContrib"] = np.round(unique_contribs_mat[:, i][inv], 4)
+
+        pandas_df = pd.DataFrame(cols)
 
         if backend == "polars":
-            return self._to_polars(rows)
-        return pd.DataFrame(rows)
+            # convert via polars for dtype consistency
+            return pl.from_pandas(pandas_df)
+        return pandas_df
 
     # ------------------------------------------------------------------
     # Properties
