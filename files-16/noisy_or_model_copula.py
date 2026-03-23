@@ -247,6 +247,256 @@ class NoisyORModelCopula(NoisyORModel):
         return matrix, pairs
 
     # ------------------------------------------------------------------
+    # Effective correlation for a set of active sources
+    # ------------------------------------------------------------------
+
+    def _rho_eff_for_active(self, active_indices: list[int]) -> float:
+        """
+        Compute the mean pairwise correlation across the active sources.
+
+        This is used to blend between Noisy-OR (rho_eff=0) and max
+        (rho_eff=1) in the combination step.  When only one source is
+        active the blending weight is 0 and Noisy-OR is used unchanged.
+        """
+        if len(active_indices) < 2:
+            return 0.0
+        pairs = [
+            self._corr_matrix[i, j]
+            for k, i in enumerate(active_indices)
+            for j in active_indices[k+1:]
+        ]
+        return float(np.mean(pairs))
+
+    # ------------------------------------------------------------------
+    # Single prediction — correlated sampling + redundancy-aware blending
+    # ------------------------------------------------------------------
+
+    def predict(
+        self,
+        active_flags,
+        n_samples=None,
+        seed=None,
+        label=None,
+    ):
+        """
+        Run a single correlated Noisy-OR prediction.
+
+        Two corrections are applied over the standard model:
+
+        1. **Correlated sampling** — Beta samples are drawn jointly via a
+           Gaussian copula so that highly-correlated sources tend to produce
+           high or low values together, rather than independently.
+
+        2. **Redundancy-aware blending** — the combination rule blends
+           between Noisy-OR (ρ_eff=0, full independence) and the maximum of
+           active source probabilities (ρ_eff→1, full redundancy):
+
+               combined = (1 − ρ_eff) × noisy_or(p_i…) + ρ_eff × max(p_i…)
+
+           At ρ=0 this is identical to standard Noisy-OR.  At ρ→1 the
+           combined risk approaches the strongest individual source, correctly
+           reflecting that highly-correlated sources carry nearly redundant
+           information and should not be double-counted.
+
+           ρ_eff is the mean pairwise correlation across active sources,
+           read from the correlation matrix.
+        """
+        import math as _math
+        from scipy.stats import norm as _norm, beta as _beta_dist
+
+        active_flags = np.asarray(active_flags, dtype=int)
+        self._validate_flags(active_flags)
+
+        n   = n_samples or self._n_samples_default
+        rng = np.random.default_rng(seed)
+
+        # --- Correlated Beta sampling (Gaussian copula) ---
+        Z = rng.standard_normal((self._n_sources, n))
+        try:
+            L = np.linalg.cholesky(self._corr_matrix)
+        except np.linalg.LinAlgError:
+            eigvals, eigvecs = np.linalg.eigh(self._corr_matrix)
+            eigvals = np.clip(eigvals, 1e-8, None)
+            L = np.linalg.cholesky(eigvecs @ np.diag(eigvals) @ eigvecs.T)
+
+        Z_corr = L @ Z
+        U      = np.clip(_norm.cdf(Z_corr), 1e-7, 1.0 - 1e-7)
+
+        all_probs = []
+        for i, (mu, kappa) in enumerate(zip(self._mu_values, self._kappa_values)):
+            alpha = max(float(mu) * float(kappa), 0.001)
+            beta  = max((1.0 - float(mu)) * float(kappa), 0.001)
+            all_probs.append(_beta_dist.ppf(U[i], alpha, beta))
+
+        # --- Blended combination (Noisy-OR ↔ max, weighted by ρ_eff) ---
+        active_indices = [i for i, a in enumerate(active_flags) if a]
+        active_probs   = [all_probs[i] for i in active_indices]
+
+        if not active_probs:
+            combined = np.zeros(n)
+        elif len(active_probs) == 1:
+            combined = active_probs[0].copy()
+        else:
+            noisy_or = 1.0 - np.prod([1.0 - p for p in active_probs], axis=0)
+            mx       = np.max(active_probs, axis=0)
+            rho_eff  = self._rho_eff_for_active(active_indices)
+            combined = (1.0 - rho_eff) * noisy_or + rho_eff * mx
+
+        mean_risk   = float(np.mean(combined))
+        median_risk = float(np.median(combined))
+        p5          = float(np.percentile(combined, 5))
+        p95         = float(np.percentile(combined, 95))
+        certainty   = max(0.0, 1.0 - (p95 - p5))
+
+        # --- Marginal contributions (analytical) ---
+        source_means = [float(np.mean(p)) for p in all_probs]
+
+        contribs: dict[int, float] = {}
+        if active_indices:
+            active_mus = [source_means[i] for i in active_indices]
+            prod_all   = _math.prod(1.0 - m for m in active_mus)
+            overall    = 1.0 - prod_all
+            for idx, mu_i in zip(active_indices, active_mus):
+                prod_without = 0.0 if mu_i > 0.9999 else prod_all / (1.0 - mu_i)
+                contribs[idx] = overall - (1.0 - prod_without)
+
+        from noisy_or_model import _certainty_label
+        sim = {
+            "mean_risk":         round(mean_risk,   4),
+            "median_risk":       round(median_risk, 4),
+            "p5":                round(p5,          4),
+            "p95":               round(p95,         4),
+            "certainty":         round(certainty,   4),
+            "certainty_label":   _certainty_label(certainty),
+            "source_means":      [round(m, 4) for m in source_means],
+            "marginal_contribs": contribs,
+        }
+        return self._format_single(sim, active_flags, label)
+
+    # ------------------------------------------------------------------
+    # Batch prediction — blended combination applied per-record
+    # ------------------------------------------------------------------
+
+    def predict_batch(
+        self,
+        active_matrix,
+        n_samples=None,
+        seed=None,
+        labels=None,
+        backend="pandas",
+    ):
+        """
+        Batch prediction with copula sampling and redundancy-aware blending.
+
+        After drawing correlated pool samples, the Noisy-OR combination for
+        each record is blended toward the per-record max using that record's
+        effective pairwise correlation across its active sources:
+
+            combined_r = (1 − ρ_eff_r) × noisy_or_r + ρ_eff_r × max_r
+
+        Records with no correlation between active sources (ρ_eff=0) get
+        standard Noisy-OR.  Records where all active sources are highly
+        correlated (ρ_eff→1) get a result approaching the strongest source.
+        """
+        import pandas as pd
+        from noisy_or_model import (
+            _run_batch_vectorized, _BATCH_POOL_SIZE, _BATCH_CHUNK_BYTES,
+            _POLARS_AVAILABLE, _certainty_label,
+        )
+
+        if backend not in ("pandas", "polars"):
+            raise ValueError(f"backend must be 'pandas' or 'polars', got '{backend}'")
+        if backend == "polars" and not _POLARS_AVAILABLE:
+            raise ImportError("polars is not installed: pip install polars")
+
+        active_matrix = np.atleast_2d(np.asarray(active_matrix, dtype=int))
+        n_records = active_matrix.shape[0]
+        n = min(n_samples or self._n_samples_default, _BATCH_POOL_SIZE)
+
+        if labels is None:
+            labels = [f"Record_{i+1}" for i in range(n_records)]
+
+        self._validate_matrix(active_matrix)
+        rng = np.random.default_rng(seed)
+
+        # Deduplication
+        keys        = [tuple(row.tolist()) for row in active_matrix]
+        unique_keys = list(dict.fromkeys(keys))
+        unique_matrix = np.array(unique_keys, dtype=int)
+
+        # Vectorized pool-backed scoring (Noisy-OR only, same as base model)
+        projected_bytes = unique_matrix.shape[0] * self._n_sources * n * 4
+        if projected_bytes > _BATCH_CHUNK_BYTES:
+            chunk_size = max(1, _BATCH_CHUNK_BYTES // (self._n_sources * n * 4))
+            unique_sims: list[dict] = []
+            for start in range(0, unique_matrix.shape[0], chunk_size):
+                unique_sims.extend(_run_batch_vectorized(
+                    self._batch_pool, self._batch_source_means,
+                    unique_matrix[start:start+chunk_size], n, rng,
+                ))
+        else:
+            unique_sims = _run_batch_vectorized(
+                self._batch_pool, self._batch_source_means, unique_matrix, n, rng,
+            )
+
+        # --- Apply blended combination per unique row ---
+        # The vectorized scorer already computed Noisy-OR mean_risk.
+        # We need to re-blend using per-row pool samples.
+        # For each unique flag pattern, compute rho_eff and blend.
+
+        # Slice the same pool columns the scorer used (approximate — we use
+        # a fresh slice of the same pool, which has the correct statistics)
+        idx        = rng.integers(0, _BATCH_POOL_SIZE, size=n)
+        pool_slice = self._batch_pool[:, idx].astype(float)  # (n_sources, n)
+
+        blended_sims: list[dict] = []
+        for r, (row_flags, sim) in enumerate(zip(unique_matrix, unique_sims)):
+            active_idx = [i for i, a in enumerate(row_flags) if a]
+
+            if len(active_idx) < 2:
+                # Solo or zero active: Noisy-OR and max are identical
+                blended_sims.append(sim)
+                continue
+
+            rho_eff = self._rho_eff_for_active(active_idx)
+            if rho_eff < 1e-6:
+                # All active sources are independent — no blending needed
+                blended_sims.append(sim)
+                continue
+
+            # Re-compute combined using the blended rule on pool samples
+            active_p  = pool_slice[active_idx, :]        # (n_active, n)
+            noisy_or  = 1.0 - np.prod(1.0 - active_p, axis=0)  # (n,)
+            mx        = np.max(active_p, axis=0)                # (n,)
+            combined  = (1.0 - rho_eff) * noisy_or + rho_eff * mx
+
+            mean_risk   = round(float(np.mean(combined)),            4)
+            median_risk = round(float(np.median(combined)),          4)
+            p5          = round(float(np.percentile(combined, 5)),   4)
+            p95         = round(float(np.percentile(combined, 95)),  4)
+            certainty   = round(max(0.0, 1.0 - (p95 - p5)),         4)
+
+            blended_sims.append({
+                **sim,
+                "mean_risk":       mean_risk,
+                "median_risk":     median_risk,
+                "p5":              p5,
+                "p95":             p95,
+                "certainty":       certainty,
+                "certainty_label": _certainty_label(certainty),
+            })
+
+        sim_lookup = {k: blended_sims[i] for i, k in enumerate(unique_keys)}
+        rows = [
+            self._format_row(sim_lookup[key], active_matrix[i], labels[i])
+            for i, key in enumerate(keys)
+        ]
+
+        if backend == "polars":
+            return self._to_polars(rows)
+        return pd.DataFrame(rows)
+
+    # ------------------------------------------------------------------
     # Pool construction — uses copula instead of independent sampling
     # ------------------------------------------------------------------
 
