@@ -267,6 +267,52 @@ class NoisyORModelCopula(NoisyORModel):
         ]
         return float(np.mean(pairs))
 
+    def _blended_risk(self, active_indices: list[int], source_means: list[float]) -> float:
+        """
+        Compute the blended combined risk for a given set of active source
+        indices using their sample means and the correlation matrix.
+
+        This is used to evaluate marginal contributions consistently with
+        the blended combination rule.  The same blend used for the full
+        prediction is applied when computing 'risk without source i'.
+        """
+        if not active_indices:
+            return 0.0
+        if len(active_indices) == 1:
+            return source_means[active_indices[0]]
+
+        mus     = [source_means[i] for i in active_indices]
+        nor     = 1.0 - float(np.prod([1.0 - m for m in mus]))
+        mx      = max(mus)
+        rho_eff = self._rho_eff_for_active(active_indices)
+        return (1.0 - rho_eff) * nor + rho_eff * mx
+
+    def _blended_marginals(
+        self,
+        active_indices: list[int],
+        source_means: list[float],
+    ) -> dict[int, float]:
+        """
+        Compute marginal contributions consistent with the blended combination
+        rule.  For each active source i:
+
+            c_i = R_blended(all active) − R_blended(all active except i)
+
+        When rho_eff = 0 this reduces to the standard Noisy-OR analytical
+        formula.  When rho_eff → 1 the contributions correctly reflect
+        near-redundancy: the marginal value of adding a correlated source
+        on top of an already-matched one approaches zero.
+        """
+        if not active_indices:
+            return {}
+        R_all    = self._blended_risk(active_indices, source_means)
+        contribs = {}
+        for idx in active_indices:
+            without       = [i for i in active_indices if i != idx]
+            R_without     = self._blended_risk(without, source_means)
+            contribs[idx] = round(R_all - R_without, 4)
+        return contribs
+
     # ------------------------------------------------------------------
     # Single prediction — correlated sampling + redundancy-aware blending
     # ------------------------------------------------------------------
@@ -301,7 +347,7 @@ class NoisyORModelCopula(NoisyORModel):
            ρ_eff is the mean pairwise correlation across active sources,
            read from the correlation matrix.
         """
-        import math as _math
+        import math as _math  # kept for potential future use
         from scipy.stats import norm as _norm, beta as _beta_dist
 
         active_flags = np.asarray(active_flags, dtype=int)
@@ -348,17 +394,19 @@ class NoisyORModelCopula(NoisyORModel):
         p95         = float(np.percentile(combined, 95))
         certainty   = max(0.0, 1.0 - (p95 - p5))
 
-        # --- Marginal contributions (analytical) ---
+        # --- Marginal contributions consistent with blended combination ---
+        # c_i = R_blended(all active) − R_blended(all active except i)
+        # This uses _blended_risk() so the "risk without source i" is also
+        # evaluated under the same blending rule (not standard Noisy-OR).
         source_means = [float(np.mean(p)) for p in all_probs]
 
         contribs: dict[int, float] = {}
         if active_indices:
-            active_mus = [source_means[i] for i in active_indices]
-            prod_all   = _math.prod(1.0 - m for m in active_mus)
-            overall    = 1.0 - prod_all
-            for idx, mu_i in zip(active_indices, active_mus):
-                prod_without = 0.0 if mu_i > 0.9999 else prod_all / (1.0 - mu_i)
-                contribs[idx] = overall - (1.0 - prod_without)
+            R_all = self._blended_risk(active_indices, source_means)
+            for idx in active_indices:
+                without = [i for i in active_indices if i != idx]
+                R_without = self._blended_risk(without, source_means)
+                contribs[idx] = round(R_all - R_without, 4)
 
         from noisy_or_model import _certainty_label
         sim = {
@@ -478,12 +526,15 @@ class NoisyORModelCopula(NoisyORModel):
 
             blended_sims.append({
                 **sim,
-                "mean_risk":       mean_risk,
-                "median_risk":     median_risk,
-                "p5":              p5,
-                "p95":             p95,
-                "certainty":       certainty,
-                "certainty_label": _certainty_label(certainty),
+                "mean_risk":         mean_risk,
+                "median_risk":       median_risk,
+                "p5":                p5,
+                "p95":               p95,
+                "certainty":         certainty,
+                "certainty_label":   _certainty_label(certainty),
+                "marginal_contribs": self._blended_marginals(
+                    active_idx, sim["source_means"]
+                ),
             })
 
         sim_lookup = {k: blended_sims[i] for i, k in enumerate(unique_keys)}
