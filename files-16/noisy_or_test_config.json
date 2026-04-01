@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "n_monte_carlo_samples": 10000,
+  "sources": [
+    {"name": "Watchlist Hit", "mu": 0.60, "kappa": 10.0},
+    {"name": "Adverse Media", "mu": 0.50, "kappa": 10.0},
+    {"name": "Random Flag",   "mu": 0.10, "kappa": 20.0}
+  ],
+  "correlations": [
+    {"source_a": "Watchlist Hit", "source_b": "Adverse Media", "rho": 0.90}
+  ],
+  "risk_bands": [
+    {"label": "High", "min_score": 0.70},
+    {"label": "Medium", "min_score": 0.40},
+    {"label": "Low", "min_score": 0.00}
+  ]
+}
